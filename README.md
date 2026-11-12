@@ -93,14 +93,21 @@ Resultados (60 videos de test de 2 canales que el modelo no vio; 18 sin voz, sol
 | 3B + LoRA (196 ejemplos, paso 150) | 75 % | 0,59 | 68 % | 0,24 | 24 |
 | **Qwen2.5-7B sin entrenar (la app)** | **100 %** | **0,68** | 65 % | **0,36** | 34 |
 
-En los 43 videos donde los tres terminaron, el LoRA es el mejor en ingredientes (F1 0,71 frente a
-0,69 del 7B) y en cantidades (67 % frente a 64 %), pero escribe menos pasos (4 por receta frente a 7)
-y peor cubiertos. Falla sobre todo en los videos sin voz: en 15 de 60 entra en un bucle repitiendo un
+Sin cortar los bucles, el LoRA fallaba en 15 de los 60 videos (casi todos sin voz): repetía un
 ingrediente hasta agotar los tokens. La validación no tenía ningún video sin voz, así que la parada
-temprana no lo vio venir. Además, las recetas de las descripciones traen ruido («Para el armado» como
-ingrediente, títulos tipo gancho), lo que limita lo que puede aprender.
+temprana no lo vio venir. Ahora el motor local (`local_llm.generate_recipe_text`) detecta la
+repetición mientras genera, la corta y, si era en los ingredientes, le hace seguir con los pasos.
+Con ese corte el LoRA recupera los 15 videos:
 
-Siguientes pasos posibles: cortar los bucles al generar (como en la fase 5), meter videos sin voz en
+| | Ingredientes F1 | Cantidad correcta | Pasos F1 | Pasos/receta |
+|---|---|---|---|---|
+| 3B + LoRA con corte de bucles | 0,68 | **67 %** | 0,29 | 5,7 |
+| 7B (la app) | 0,68 | 65 % | **0,36** | 7,0 |
+
+Empata en ingredientes, acierta algo más las cantidades y es más rápido, pero escribe menos pasos y
+peor cubiertos (las recetas de las descripciones traen los pasos resumidos). Por eso la app sigue con
+el 7B. Las respuestas correctas también traen ruido («Para el armado» como ingrediente, títulos tipo
+gancho), lo que limita lo que puede aprender cualquier modelo. Para mejorarlo: videos sin voz en
 validación, más canales y limpiar mejor las respuestas correctas.
 
 ## Motor: Claude o tu propio modelo

@@ -185,15 +185,13 @@ def ingredient_line(i) -> str:
 
 
 def generate(model_name: str, adapter: Path | None, rows: list[dict]) -> list[dict]:
-    from mlx_lm import load, stream_generate
+    from mlx_lm import load
 
     model, tokenizer = load(model_name, adapter_path=str(adapter) if adapter else None)
     results = []
     for n, row in enumerate(rows, 1):
-        prompt = tokenizer.apply_chat_template(row["messages"][:2], add_generation_prompt=True, tokenize=False)
-        start, text = time.time(), ""
-        for r in stream_generate(model, tokenizer, prompt=prompt, max_tokens=1500):
-            text += r.text
+        start = time.time()
+        text, _ = local_llm.generate_recipe_text(model, tokenizer, row["messages"][:2], 1500)
         try:
             recipe = local_llm.coerce(local_llm._extract_json(text))
         except Exception:

@@ -203,20 +203,82 @@ def coerce(obj: dict) -> Recipe:
     })
 
 
+# ---------------------------------------------------------------- bucles de repetición
+# Los modelos pequeños a veces repiten el mismo ingrediente o paso hasta agotar los tokens.
+# Se detecta mientras genera, se corta la repetición y, si era en los ingredientes, se le
+# pide que siga con los pasos.
+
+_OBJ = re.compile(r"\{[^{}]*\}")
+_STR = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", "", s.lower())
+
+
+def _ingredient_loop(text: str) -> int | None:
+    """Dónde empieza la repetición si un mismo ingrediente sale 3 veces (2 puede ser legítimo)."""
+    start = text.find('"ingredients"')
+    if start < 0:
+        return None
+    seen: dict[str, list[int]] = {}
+    for m in _OBJ.finditer(text, start):
+        pos = seen.setdefault(_norm(m.group()), [])
+        pos.append(m.start())
+        if len(pos) >= 3:
+            return pos[1]
+    return None
+
+
+def _step_loop(text: str) -> int | None:
+    """Dónde empieza la repetición si un paso sale dos veces."""
+    start = text.find("[", text.find('"steps"'))
+    seen: set[str] = set()
+    for m in _STR.finditer(text, max(start, 0)):
+        key = _norm(m.group(1))
+        if len(key) < 15:  # claves JSON y textos cortos
+            continue
+        if key in seen:
+            return m.start()
+        seen.add(key)
+    return None
+
+
+def generate_recipe_text(model: Any, tokenizer: Any, messages: list[dict], max_tokens: int) -> tuple[str, Any]:
+    """Genera el JSON de la receta cortando los bucles. Devuelve el texto y la última respuesta de MLX."""
+    from mlx_lm import stream_generate
+
+    prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    text, last, budget = "", None, max_tokens
+    while budget > 0:
+        cut = None
+        for last in stream_generate(model, tokenizer, prompt=prompt + text, max_tokens=budget):
+            text += last.text
+            budget -= 1
+            if "}" in last.text or "," in last.text:
+                cut = _step_loop(text) if '"steps"' in text else _ingredient_loop(text)
+                if cut is not None:
+                    break
+        if cut is None:
+            break
+        text = text[:cut].rstrip().rstrip(",")
+        log.info("El modelo local entró en bucle; corto la repetición")
+        if '"steps"' in text:
+            text += "]}"
+            last = None  # la receta está completa: no contar como «demasiado larga»
+            break
+        text += '], "steps": ['  # que siga con los pasos
+    return text, last
+
+
 # ---------------------------------------------------------------- análisis
 
 def analyze_local(data: VideoData, language: str) -> Recipe:
-    from mlx_lm import stream_generate
-
     from .pipeline import PipelineError
 
     with _lock:
         model, tokenizer = _load()
-        messages = messages_for(data, language)
-        prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-        text, last = "", None
-        for last in stream_generate(model, tokenizer, prompt=prompt, max_tokens=MAX_TOKENS):
-            text += last.text
+        text, last = generate_recipe_text(model, tokenizer, messages_for(data, language), MAX_TOKENS)
 
     data.model_used = model_name()
     if last is not None:
