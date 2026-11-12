@@ -130,6 +130,41 @@ def build_prompt(data: VideoData) -> str:
     )
 
 
+# ---------------------------------------------------------------- ¿hay información suficiente?
+# El modelo local no ve la imagen: si el video no dice ni escribe la receta, se la inventa.
+# En Instagram es muy común «comenta RECETA y te la mando» con un video solo de música.
+
+_QTY = re.compile(
+    r"(?<![\w#])(\d+(?:[.,/]\d+)?|½|¼|¾|⅓|un[ao]?|media|medio)\s*"
+    r"(g|gr|grs|gramos?|kg|kilos?|ml|l|litros?|tazas?|cups?|cucharad(?:a|ita)s?|cdas?|cdtas?|"
+    r"tbsps?|tsps?|oz|onzas?|libras?|lbs?|dientes?|pizcas?|huevos?|eggs?)\b", re.I)
+_CTA = re.compile(
+    r"coment(a|á|e)|comment|te (la )?(mando|envío|envio|paso)|\bdm\b|link (in|en) (la )?bio|"
+    r"mi (web|página|blog)|my (website|blog)|receta completa en", re.I)
+
+
+def has_enough_info(data: VideoData) -> bool:
+    """Hay voz, o la receta está escrita (descripción o pantalla) con al menos un par de cantidades."""
+    if clean_transcript(data.transcript):
+        return True
+    written = f"{data.description}\n{data.ocr_text}"
+    if len(_QTY.findall(written)) >= 3:
+        return True
+    ocr_words = re.findall(r"[^\W\d_]{3,}", re.sub(r"\[\d{1,2}:\d{2}\]", "", data.ocr_text or ""))
+    if len(set(w.lower() for w in ocr_words)) >= 15:  # ingredientes escritos en pantalla, aunque sin cantidades
+        return True
+    lines = [l for l in written.splitlines() if re.match(r"\s*([-•*·▪️✔️]|\d+[.)])\s*\w", l)]
+    return len(lines) >= 4
+
+
+def no_info_message(data: VideoData) -> str:
+    msg = ("Este video no trae la receta: no se explica en voz alta, no aparece escrita en pantalla "
+           "y la descripción no la incluye.")
+    if _CTA.search(data.description or ""):
+        msg += " El autor la comparte aparte (por mensaje o en su web); revisa la descripción del video."
+    return msg
+
+
 # ---------------------------------------------------------------- JSON tolerante
 
 def _extract_json(text: str) -> dict:
@@ -141,11 +176,33 @@ def _extract_json(text: str) -> dict:
 
 
 def _str_or_none(v: Any) -> str | None:
-    if v is None or v == "":
+    if v is None or (isinstance(v, str) and v.strip().lower() in ("", "null", "none", "n/a", "-")):
         return None
     if isinstance(v, float) and v.is_integer():
         v = int(v)
-    return str(v)
+    return str(v).strip()
+
+
+_UNITS = re.compile(
+    r"(g|gr|grs|gramos?|kg|ml|l|litros?|tazas?|cups?|cucharad(?:a|ita)s?|cdas?|cdtas?|tbsps?|tsps?|"
+    r"oz|onzas?|libras?|lbs?|dientes?|pizcas?|piezas?|latas?|sobres?|chorritos?)", re.I)
+_NO_UNIT = {"porción", "porciones", "porcion", "each", "unidad", "unidades", "u", "pieces"}
+_LEADING_QTY = re.compile(r"^(\d+(?:[.,/]\d+)?(?:\s+\d/\d|\s*[½¼¾⅓])?|½|¼|¾|un[ao]?|media|medio)\s+(.+)$", re.I)
+
+
+def _fix_units(quantity: str | None, unit: str | None) -> tuple[str | None, str | None]:
+    """Corrige «2 libras» + «libras», «5» + «porciones», «null» + «grs» y «1 cucharada» + null."""
+    if unit and unit.lower() in _NO_UNIT:
+        unit = None
+    if quantity and unit and quantity.lower().endswith(" " + unit.lower()):
+        quantity = quantity[: -len(unit)].strip()
+    if quantity and not unit:
+        m = _LEADING_QTY.match(quantity)
+        if m and _UNITS.fullmatch(m.group(2)):
+            quantity, unit = m.group(1), m.group(2)
+    if not quantity and unit and _UNITS.fullmatch(unit):
+        unit = None  # una unidad sin cantidad no dice nada
+    return quantity, unit
 
 
 def _num_or_none(v: Any) -> float | None:
@@ -169,9 +226,10 @@ def coerce(obj: dict) -> Recipe:
             i = {"name": i}
         if not isinstance(i, dict) or not i.get("name"):
             continue
+        quantity, unit = _fix_units(_str_or_none(i.get("quantity")), _str_or_none(i.get("unit")))
         ingredients.append({
-            "name": str(i["name"]), "quantity": _str_or_none(i.get("quantity")),
-            "unit": _str_or_none(i.get("unit")), "notes": _str_or_none(i.get("notes")),
+            "name": str(i["name"]), "quantity": quantity,
+            "unit": unit, "notes": _str_or_none(i.get("notes")),
             "estimated": False,  # no mira la imagen: nunca estima cantidades
         })
     steps = []
@@ -274,8 +332,11 @@ def generate_recipe_text(model: Any, tokenizer: Any, messages: list[dict], max_t
 # ---------------------------------------------------------------- análisis
 
 def analyze_local(data: VideoData, language: str) -> Recipe:
-    from .pipeline import PipelineError
+    from .pipeline import NoRecipeInfoError, PipelineError
 
+    if not has_enough_info(data):
+        data.model_used = model_name()
+        raise NoRecipeInfoError(no_info_message(data))
     with _lock:
         model, tokenizer = _load()
         text, last = generate_recipe_text(model, tokenizer, messages_for(data, language), MAX_TOKENS)

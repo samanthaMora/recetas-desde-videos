@@ -67,6 +67,12 @@ class PipelineError(Exception):
     code = "error"
 
 
+class NoRecipeInfoError(PipelineError):
+    """El video no trae la receta (sin voz, sin texto útil y sin receta en la descripción)."""
+
+    code = "no_recipe_info"
+
+
 class NotRecipeError(PipelineError):
     """El clasificador propio está muy seguro de que el video no es una receta."""
 
