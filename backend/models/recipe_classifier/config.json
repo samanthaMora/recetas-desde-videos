@@ -1,0 +1,5 @@
+{
+  "type": "tfidf_lr",
+  "reject_below": 0.138,
+  "trained_at": "2026-11-11 20:58"
+}

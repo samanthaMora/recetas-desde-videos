@@ -1,0 +1,14 @@
+anthropic>=1.0.0
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+yt-dlp>=2025.1.1
+faster-whisper>=1.1
+python-dotenv>=1.0
+certifi>=2024.0
+# Fase 2: visión (selección de fotogramas y OCR)
+torch>=2.4
+sentence-transformers>=3.0
+easyocr>=1.7
+# Motor local (RECIPE_ENGINE=local), solo Mac con Apple Silicon
+mlx-lm>=0.32; sys_platform == "darwin"

@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Secretos (la clave de Claude va en backend/.env)
+.env
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Datos: videos, fotogramas, base de datos y datasets de terceros (no se suben)
+backend/data/
+backend/cookies.txt
+
+# Modelos: solo se sube el resultado final, no los checkpoints intermedios
+backend/models/ingredients_lora/0*_adapters.safetensors
