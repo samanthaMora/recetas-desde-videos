@@ -17,3 +17,4 @@ backend/cookies.txt
 
 # Modelos: solo se sube el resultado final, no los checkpoints intermedios
 backend/models/ingredients_lora/0*_adapters.safetensors
+backend/models/recipe_lora/0*_adapters.safetensors

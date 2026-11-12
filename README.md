@@ -28,6 +28,7 @@ mobile/    App Expo (iPhone, Android y web) con la opción «Compartir con Recet
 | 3. Búsqueda semántica y recomendaciones (embeddings) | ✅ e5-small, evaluado con `scripts/eval_embeddings.py` |
 | 4. Clasificador propio «¿es receta?» | ✅ TF-IDF en producción — ver `notebooks/clasificador_recetas.ipynb` |
 | 5. Modelo de lenguaje propio con LoRA (MLX) | ✅ experimento — Qwen2.5-1.5B + LoRA empata con el modelo base (F1 0,60 vs 0,61); no está en producción |
+| 6. Receta completa con LoRA sobre YouTube Shorts | ✅ experimento — el 3B + LoRA no supera al 7B de la app; no está en producción |
 
 ### Reentrenar el clasificador
 
@@ -67,6 +68,40 @@ Lo que más mejoró fue la generación, no el entrenamiento: sin cortar los bucl
 dos modelos sacaban 20-40 «ingredientes» repetidos (F1 0,38 y 0,28). El LoRA aprendió el formato
 (listas del tamaño de las del autor, cantidades algo más exactas) pero no a encontrar más
 ingredientes. Siguientes pasos posibles: más ejemplos, un modelo base mayor (3B) o mirar también la imagen.
+
+### Modelo propio de recetas completas (fase 6)
+
+Entrena Qwen2.5-3B para escribir la receta entera (ingredientes y pasos) en el mismo JSON que usa el
+motor local. Datos gratis y sin Claude: 300 YouTube Shorts de 13 canales en los que el autor escribió
+la receta en la descripción. Esa receta es la respuesta correcta; la entrada es la voz, el texto en
+pantalla (OCR) y la descripción (casi siempre sin la receta, para que aprenda a sacarla del video).
+
+```bash
+cd backend
+.venv/bin/python scripts/collect_shorts_data.py canales                 # busca canales que escriben la receta
+.venv/bin/python scripts/collect_shorts_data.py recoger --objetivo 300  # descarga + voz + OCR (~2 h, reanudable)
+.venv/bin/python scripts/train_recipe_llm.py preparar                   # train/valid/test separados por canal
+.venv/bin/python scripts/train_recipe_llm.py entrenar                   # LoRA (~1 h 40 min en un M-series de 16 GB)
+.venv/bin/python scripts/train_recipe_llm.py evaluar                    # 3B base vs 3B + LoRA vs 7B (~1 h 15 min)
+```
+
+Resultados (60 videos de test de 2 canales que el modelo no vio; 18 sin voz, solo música):
+
+| | JSON válido | Ingredientes F1 | Cantidad correcta | Pasos F1 | Segundos/video |
+|---|---|---|---|---|---|
+| Qwen2.5-3B sin entrenar | 97 % | 0,62 | 63 % | 0,31 | 14 |
+| 3B + LoRA (196 ejemplos, paso 150) | 75 % | 0,59 | 68 % | 0,24 | 24 |
+| **Qwen2.5-7B sin entrenar (la app)** | **100 %** | **0,68** | 65 % | **0,36** | 34 |
+
+En los 43 videos donde los tres terminaron, el LoRA es el mejor en ingredientes (F1 0,71 frente a
+0,69 del 7B) y en cantidades (67 % frente a 64 %), pero escribe menos pasos (4 por receta frente a 7)
+y peor cubiertos. Falla sobre todo en los videos sin voz: en 15 de 60 entra en un bucle repitiendo un
+ingrediente hasta agotar los tokens. La validación no tenía ningún video sin voz, así que la parada
+temprana no lo vio venir. Además, las recetas de las descripciones traen ruido («Para el armado» como
+ingrediente, títulos tipo gancho), lo que limita lo que puede aprender.
+
+Siguientes pasos posibles: cortar los bucles al generar (como en la fase 5), meter videos sin voz en
+validación, más canales y limpiar mejor las respuestas correctas.
 
 ## Motor: Claude o tu propio modelo
 

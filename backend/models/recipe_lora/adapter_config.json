@@ -1,0 +1,42 @@
+{
+    "adapter_path": "/Users/tabatha/Desktop/untitled folder/backend/models/recipe_lora",
+    "batch_size": 1,
+    "clear_cache_threshold": 0,
+    "config": "/Users/tabatha/Desktop/untitled folder/backend/models/recipe_lora/lora_config.yaml",
+    "data": "/Users/tabatha/Desktop/untitled folder/backend/data/shorts/mlx",
+    "fine_tune_type": "lora",
+    "grad_accumulation_steps": 1,
+    "grad_checkpoint": true,
+    "iters": 300,
+    "learning_rate": 5e-05,
+    "lora_parameters": {
+        "rank": 8,
+        "dropout": 0.1,
+        "scale": 20.0
+    },
+    "lr_schedule": null,
+    "mask_prompt": true,
+    "max_seq_length": 4096,
+    "model": "mlx-community/Qwen2.5-3B-Instruct-4bit",
+    "num_layers": 16,
+    "optimizer": "adam",
+    "optimizer_config": {
+        "adam": {},
+        "adamw": {},
+        "muon": {},
+        "sgd": {},
+        "adafactor": {}
+    },
+    "project_name": null,
+    "report_to": null,
+    "resume_adapter_file": null,
+    "save_every": 50,
+    "seed": 42,
+    "steps_per_eval": 50,
+    "steps_per_report": 25,
+    "test": false,
+    "test_batches": 500,
+    "train": true,
+    "trust_remote_code": false,
+    "val_batches": -1
+}

@@ -1,0 +1,17 @@
+{
+  "modelo_base": "mlx-community/Qwen2.5-3B-Instruct-4bit",
+  "ejemplos_entrenamiento": 196,
+  "pasos": 300,
+  "lr": 5e-05,
+  "dropout": 0.1,
+  "capas": 16,
+  "validacion_por_paso": {
+    "1": 0.891,
+    "50": 0.71,
+    "100": 0.713,
+    "150": 0.684,
+    "200": 0.686,
+    "250": 0.743,
+    "300": 0.737
+  }
+}
