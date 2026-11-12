@@ -64,7 +64,7 @@ _STEP_STOP = re.compile(
 _NUMBERED = re.compile(
     r"^\(?\d{1,2}\s*[.)\-:]\s*|^\d{1,2}\s+(?=[A-ZÁÉÍÓÚÑ¡¿])|^paso\s*\d+\s*[.:\-]?\s*|^step\s*\d+\s*[.:\-]?\s*", re.I
 )
-_EMOJI = re.compile(r"[\U0001F000-\U0001FFFF\u2190-\u21FF\u2300-\u23FF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u20E3\u200D]")
+_EMOJI = re.compile(r"[\U0001F000-\U0001FFFF\u2190-\u21FF\u2300-\u23FF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u20E3\u200B-\u200F\u2060-\u206F]")
 _CTA = re.compile(r"gu[aá]rda|coment|compart|dale (al|like|me gusta)|like|suscr|s[ií]gue|link|enlace|descarga|save|share", re.I)
 _OUTRO = re.compile(r"^¡?\s*(listo|disfruta|buen provecho|a disfrutar|enjoy)\b", re.I)
 
@@ -235,7 +235,7 @@ def process(video_id: str, info: dict, ingredients: list[str], steps: list[str])
     }
 
 
-def collect(target: int, per_channel: int, min_full: int, pause: float) -> None:
+def collect(target: int, per_channel: int, max_per_channel: int, min_full: int, pause: float) -> None:
     from app import vision
 
     if not CHANNELS.exists():
@@ -243,7 +243,8 @@ def collect(target: int, per_channel: int, min_full: int, pause: float) -> None:
     channels = json.loads(CHANNELS.read_text())
     good = sorted(((u, c) for u, c in channels.items() if c.get("full", 0) >= min_full), key=lambda x: -x[1]["full"])
     seen: set[str] = set(json.loads(SEEN.read_text())) if SEEN.exists() else set()
-    done = sum(1 for _ in EXAMPLES.open(encoding="utf-8")) if EXAMPLES.exists() else 0
+    previous = [json.loads(l)["channel"] for l in EXAMPLES.open(encoding="utf-8")] if EXAMPLES.exists() else []
+    done = len(previous)
     print(f"{len(good)} canales · {done} ejemplos ya recogidos · objetivo {target}", file=sys.stderr)
     vision.warmup()
 
@@ -258,9 +259,9 @@ def collect(target: int, per_channel: int, min_full: int, pause: float) -> None:
             except Exception as e:
                 print(f"  {stats['name']}: {str(e)[:80]}", file=sys.stderr)
                 continue
-            got = 0
+            got = previous.count(stats["name"])  # al reanudar, cuenta lo ya recogido de este canal
             for video_id in ids:
-                if done >= target:
+                if done >= target or got >= max_per_channel:
                     break
                 try:
                     info = info_of(video_id)
@@ -301,13 +302,14 @@ def main() -> None:
     r = sub.add_parser("recoger", help="recoger ejemplos de los mejores canales")
     r.add_argument("--objetivo", type=int, default=300)
     r.add_argument("--por-canal", type=int, default=200, help="máximo de Shorts que se miran por canal")
+    r.add_argument("--max-por-canal", type=int, default=30, help="ejemplos máximos por canal (variedad)")
     r.add_argument("--minimo", type=int, default=1, help="recetas completas mínimas en la muestra del canal")
     r.add_argument("--pausa", type=float, default=1.5)
     args = parser.parse_args()
     if args.cmd == "canales":
         find_channels(args.muestra, args.pausa)
     else:
-        collect(args.objetivo, args.por_canal, args.minimo, args.pausa)
+        collect(args.objetivo, args.por_canal, args.max_por_canal, args.minimo, args.pausa)
 
 
 if __name__ == "__main__":

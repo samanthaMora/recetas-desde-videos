@@ -136,13 +136,18 @@ def _pick_subtitles(info: dict) -> tuple[str, bool] | None:
     if manual_langs:
         best = next((l for l in manual_langs if lang and l.startswith(lang)), manual_langs[0])
         return best, False
-    # Los automáticos de YouTube traducen a todos los idiomas; "-orig" es el original.
+    # Los automáticos de YouTube traducen a todos los idiomas; "-orig" es el original. Un video con
+    # doblaje automático tiene varios "-orig" (uno por pista de audio): hay que elegir el de su idioma.
     orig = [l for l in auto if l.endswith("-orig")]
-    if orig:
+    if lang:
+        same = next((l for l in orig if l.split("-")[0] == lang), None)
+        if same:
+            return same, True
+        if lang in auto:
+            return lang, True
+    if len(orig) == 1:
         return orig[0], True
-    if lang and lang in auto:
-        return lang, True
-    return None
+    return None  # idioma dudoso: mejor que Whisper escuche el audio
 
 
 def check_is_recipe(data: VideoData, force: bool) -> None:
