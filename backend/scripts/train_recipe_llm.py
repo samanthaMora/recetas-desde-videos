@@ -2,13 +2,16 @@
 
     cd backend
     .venv/bin/python scripts/train_recipe_llm.py preparar     # data/shorts/examples.jsonl -> formato chat
-    .venv/bin/python scripts/train_recipe_llm.py entrenar     # LoRA sobre Qwen2.5-3B
-    .venv/bin/python scripts/train_recipe_llm.py evaluar      # 3B base vs 3B + LoRA vs 7B base (el actual)
+    .venv/bin/python scripts/train_recipe_llm.py entrenar     # LoRA sobre Qwen2.5-7B (para el servidor antes: memoria)
+    .venv/bin/python scripts/train_recipe_llm.py evaluar      # 7B sin entrenar (el de la app) vs 7B + tu LoRA
 
 Para usarlo en la app (backend/.env):
     RECIPE_ENGINE=local
-    LOCAL_MODEL=mlx-community/Qwen2.5-3B-Instruct-4bit
+    LOCAL_MODEL=mlx-community/Qwen2.5-7B-Instruct-4bit
     LOCAL_ADAPTER=models/recipe_lora
+
+Historial: un primer intento con Qwen2.5-3B + LoRA empató con el 7B en ingredientes pero escribía
+peores pasos (ver README), así que ahora se ajusta directamente el 7B.
 
 Datos: YouTube Shorts cuyo autor escribió la receta en la descripción (scripts/collect_shorts_data.py).
 - Entrada: exactamente lo que ve el motor local en la app (app/local_llm.messages_for): título, voz,
@@ -36,8 +39,7 @@ from app.pipeline import VideoData  # noqa: E402
 from collect_shorts_data import _PREP_HEADER, _clean, _no_emoji  # noqa: E402
 import train_ingredients_llm as ing  # noqa: E402
 
-BASE_MODEL = "mlx-community/Qwen2.5-3B-Instruct-4bit"
-REFERENCE_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"  # el que usa hoy la app
+BASE_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"  # el que usa hoy la app
 EXAMPLES = db.DATA_DIR / "shorts" / "examples.jsonl"
 MLX_DATA = db.DATA_DIR / "shorts" / "mlx"
 ADAPTER = Path(__file__).resolve().parent.parent / "models" / "recipe_lora"
@@ -46,7 +48,7 @@ SEED = 42
 
 # ---------------------------------------------------------------- receta del autor -> JSON
 
-_NUM = r"(?:\d+(?:[.,]\d+)?(?:\s*/\s*\d+)?(?:\s*(?:-|a|o)\s*\d+(?:[.,]\d+)?)?|\d+\s+\d/\d|½|¼|¾|⅓|⅔|una?|uno|media|medio|dos|tres)"
+_NUM = r"(?:\d+\s+\d/\d|\d+\s+y\s+(?:½|¼|¾|⅓|⅔|\d/\d|medio|media)|\d+\s*[½¼¾⅓⅔]|\d+(?:[.,]\d+)?(?:\s*/\s*\d+)?(?:\s*(?:-|a|o)\s*\d+(?:[.,]\d+)?)?|½|¼|¾|⅓|⅔|una?|uno|media|medio|dos|tres)"
 _UNIT = (
     r"(?:kg|kilos?|g|gr|grs|gramos?|mg|ml|cc|cl|dl|l|lt|litros?|tazas?|cups?|cdas?|cdtas?|chtas?|cucharadas?(?: soperas?)?|"
     r"cucharaditas?|cdita|tbsp|tsp|oz|lb|lbs|libras?|piezas?|pzas?|dientes?|ramas?|ramitas?|latas?|sobres?|pizcas?|"
@@ -57,6 +59,9 @@ _LINE = re.compile(rf"^(?P<q>{_NUM})\s*(?:(?P<u>{_UNIT})\.?(?=\s|$))?\s*(?:de\s+
 _SERVINGS = re.compile(r"para\s+(\d+)\s*(personas|porciones|raciones|comensales|unidades)|(\d+)\s*(porciones|raciones|servings)", re.I)
 
 
+_TO_TASTE = re.compile(r"(?i)[,.\s-]+((?:la\s+)?cantidad necesaria|c\.?\s*/?\s*n\.?|al gusto|a gusto|to taste)\s*$")
+
+
 def ingredient_json(line: str) -> dict:
     """'200 g de harina (tamizada)' -> {name: harina, quantity: 200, unit: g, notes: tamizada}."""
     notes = None
@@ -64,6 +69,11 @@ def ingredient_json(line: str) -> dict:
     if m:
         notes = m[1].strip() or None
         line = (line[:m.start()] + line[m.end():]).strip()
+    m = _TO_TASTE.search(line)
+    if m:  # "Frutillas, cantidad necesaria" -> name: Frutillas, notes: cantidad necesaria
+        extra = re.sub(r"(?i)^c\.?\s*/?\s*n\.?$", "cantidad necesaria", m[1].strip())
+        notes = f"{notes}, {extra}" if notes else extra
+        line = line[:m.start()].strip()
     if ":" in line:  # "Harina: 200 g" -> "200 g Harina"
         left, right = (x.strip() for x in line.split(":", 1))
         if re.match(_NUM, right, re.I) and left:
@@ -80,14 +90,46 @@ def clean_title(title: str) -> str:
     return title.strip(" !¡?¿.-:") or "Receta"
 
 
+_YIELD = re.compile(r"(?i)^para\s+(\d+(?:\s*(?:a|-)\s*\d+)?)\s+([a-záéíóúñ ]+?)(?:\s+aprox\.?)?$")
+
+
+def _is_header(ing: dict) -> bool:
+    """«Para el relleno», «Paso a paso para hacer…», «RELLENO PARA SABOR VAINILLA»: encabezados, no ingredientes."""
+    if ing["quantity"] is not None:
+        return False
+    name = ing["name"].strip()
+    if name.endswith(":") or re.match(r"(?i)^paso a paso", name):
+        return True
+    if re.match(r"(?i)^para\b", name) and len(name.split()) <= 8:
+        return True
+    letters = re.sub(r"[^A-Za-zÁÉÍÓÚÑáéíóúñ]", "", name)
+    return len(name.split()) >= 2 and letters.isupper()
+
+
 def target_json(ex: dict) -> str:
     m = _SERVINGS.search(ex["description"])
     servings = f"{m[1] or m[3]} {(m[2] or m[4]).lower()}" if m else None
+    ingredients, section = [], None
+    for raw in ex["ingredients"]:
+        if re.search(r"@|https?://|www\.", raw):
+            continue
+        ing = ingredient_json(raw)
+        if _is_header(ing):
+            name = ing["name"].strip().rstrip(":")
+            y = _YIELD.match(name)
+            if y and servings is None and not re.search(r"(?i)molde|cm\b", y[2]):
+                servings = f"{y[1]} {y[2].strip().lower()}"  # «para 12 alfajores» = rinde 12
+            elif re.match(r"(?i)^para (el|la|los|las|montar|servir|decorar|terminar|acompañar)\b", name):
+                section = name.lower()  # «Para el relleno» → nota de los ingredientes que siguen
+            continue
+        if section and not ing["notes"]:
+            ing["notes"] = section
+        ingredients.append(ing)
     return json.dumps({
         "is_recipe": True,
         "title": clean_title(ex["title"]),
         "servings": servings,
-        "ingredients": [ingredient_json(i) for i in ex["ingredients"] if not re.search(r"@|https?://|www\.", i)],
+        "ingredients": ingredients,
         "steps": ex["steps"],
     }, ensure_ascii=False)
 
@@ -128,7 +170,8 @@ def language_of(ex: dict) -> str:
 # ---------------------------------------------------------------- preparar
 
 def split_by_channel(examples: list[dict]) -> dict[str, list[dict]]:
-    """Reparte canales enteros. El test debe incluir videos sin voz (solo música), como muchos Reels."""
+    """Reparte canales enteros. Test y validación deben incluir videos sin voz (solo música), como
+    muchos Reels: sin ellos en validación, la parada temprana no ve los bucles de esos videos."""
     channels = sorted({e["channel"] for e in examples})
     size = {c: sum(1 for e in examples if e["channel"] == c) for c in channels}
     mute = {c: sum(1 for e in examples if e["channel"] == c and not local_llm.clean_transcript(e["transcript"]))
@@ -144,8 +187,11 @@ def split_by_channel(examples: list[dict]) -> dict[str, list[dict]]:
             if name in counts:
                 counts[name] += size[c]
         test_mute = sum(mute[c] for c in channels if split[c] == "test") / max(1, counts["test"])
-        if 0.2 <= test_mute <= 0.5 and counts["valid"] > 0:
+        valid_mute = sum(mute[c] for c in channels if split[c] == "valid") / max(1, counts["valid"])
+        if 0.2 <= test_mute <= 0.5 and 0.15 <= valid_mute <= 0.5:
             break
+    else:
+        raise SystemExit("No encontré un reparto con videos sin voz en test y validación.")
     out = {"train": [], "valid": [], "test": []}
     for e in examples:
         out[split[e["channel"]]].append(e)
@@ -203,15 +249,13 @@ def generate(model_name: str, adapter: Path | None, rows: list[dict]) -> list[di
     return results
 
 
-def evaluate(limit: int | None, skip_reference: bool) -> None:
+def evaluate(limit: int | None) -> None:
     rows = [json.loads(l) for l in (MLX_DATA / "test.jsonl").read_text(encoding="utf-8").splitlines()][:limit]
     gold = [json.loads(r["messages"][2]["content"]) for r in rows]
     gold_ing = [[ingredient_line(i) for i in local_llm.coerce({"ingredients": g["ingredients"]}).ingredients] for g in gold]
     gold_steps = [step_tokens(g["steps"]) for g in gold]
 
-    candidates = [("3B sin entrenar", BASE_MODEL, None), ("3B + tu LoRA", BASE_MODEL, ADAPTER)]
-    if not skip_reference:
-        candidates.append(("7B sin entrenar (app actual)", REFERENCE_MODEL, None))
+    candidates = [("7B sin entrenar (la app)", BASE_MODEL, None), ("7B + tu LoRA", BASE_MODEL, ADAPTER)]
     report, details = {}, {}
     for name, model_name, adapter in candidates:
         if adapter is not None and not (adapter / "adapters.safetensors").exists():
@@ -266,7 +310,6 @@ def main() -> None:
     t.add_argument("--dropout", type=float, default=0.1)
     e = sub.add_parser("evaluar")
     e.add_argument("--limite", type=int)
-    e.add_argument("--sin-7b", action="store_true", help="no comparar con el 7B (más rápido)")
     args = parser.parse_args()
     if args.cmd == "preparar":
         prepare()
@@ -274,7 +317,7 @@ def main() -> None:
         ing.train(args.iters, args.lr, args.capas, args.dropout,
                   base_model=BASE_MODEL, data_dir=MLX_DATA, adapter=ADAPTER, max_seq=4096)
     else:
-        evaluate(args.limite, args.sin_7b)
+        evaluate(args.limite)
 
 
 if __name__ == "__main__":
