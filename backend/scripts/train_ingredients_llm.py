@@ -136,7 +136,10 @@ def prepare() -> None:
 EVAL_EVERY = 50
 
 
-def train(iters: int | None, lr: float, layers: int, dropout: float) -> None:
+def train(
+    iters: int | None, lr: float, layers: int, dropout: float,
+    base_model: str = BASE_MODEL, data_dir: Path = MLX_DATA, adapter: Path = ADAPTER, max_seq: int = 3584,
+) -> None:
     """LoRA con early stopping: guarda cada EVAL_EVERY pasos y se queda con la mejor validación.
 
     En la primera prueba (61 ejemplos, 150 pasos, lr 1e-4) la pérdida de entrenamiento bajó de
@@ -145,19 +148,19 @@ def train(iters: int | None, lr: float, layers: int, dropout: float) -> None:
     """
     import shutil
 
-    n_train = sum(1 for _ in (MLX_DATA / "train.jsonl").open())
+    n_train = sum(1 for _ in (data_dir / "train.jsonl").open())
     iters = iters or max(EVAL_EVERY, round(n_train * 1.5 / EVAL_EVERY) * EVAL_EVERY)  # ~1,5 épocas
-    if ADAPTER.exists():
-        shutil.rmtree(ADAPTER)
-    ADAPTER.mkdir(parents=True)
-    config = ADAPTER / "lora_config.yaml"
+    if adapter.exists():
+        shutil.rmtree(adapter)
+    adapter.mkdir(parents=True)
+    config = adapter / "lora_config.yaml"
     config.write_text(f"lora_parameters:\n  rank: 8\n  dropout: {dropout}\n  scale: 20.0\n")
     cmd = [
         sys.executable, "-m", "mlx_lm", "lora", "--config", str(config),
-        "--model", BASE_MODEL, "--train", "--data", str(MLX_DATA),
-        "--adapter-path", str(ADAPTER),
+        "--model", base_model, "--train", "--data", str(data_dir),
+        "--adapter-path", str(adapter),
         "--iters", str(iters), "--batch-size", "1", "--num-layers", str(layers),
-        "--learning-rate", str(lr), "--max-seq-length", "3584",
+        "--learning-rate", str(lr), "--max-seq-length", str(max_seq),
         "--mask-prompt",        # la pérdida solo cuenta la respuesta, no la transcripción
         "--grad-checkpoint",    # menos memoria (16 GB de RAM)
         "--steps-per-report", "25", "--steps-per-eval", str(EVAL_EVERY), "--val-batches", "-1",
@@ -177,14 +180,14 @@ def train(iters: int | None, lr: float, layers: int, dropout: float) -> None:
     if proc.wait() != 0:
         raise SystemExit("El entrenamiento falló")
 
-    saved = {it: loss for it, loss in val_losses.items() if (ADAPTER / f"{it:07d}_adapters.safetensors").exists()}
+    saved = {it: loss for it, loss in val_losses.items() if (adapter / f"{it:07d}_adapters.safetensors").exists()}
     if saved:
         best = min(saved, key=saved.get)
-        shutil.copy(ADAPTER / f"{best:07d}_adapters.safetensors", ADAPTER / "adapters.safetensors")
+        shutil.copy(adapter / f"{best:07d}_adapters.safetensors", adapter / "adapters.safetensors")
         print(f"\nPérdida de validación por paso: {dict(sorted(val_losses.items()))}")
-        print(f"Me quedo con el paso {best} (validación {saved[best]:.3f}) -> {ADAPTER / 'adapters.safetensors'}")
-    (ADAPTER / "training.json").write_text(json.dumps(
-        {"modelo_base": BASE_MODEL, "ejemplos_entrenamiento": n_train, "pasos": iters, "lr": lr,
+        print(f"Me quedo con el paso {best} (validación {saved[best]:.3f}) -> {adapter / 'adapters.safetensors'}")
+    (adapter / "training.json").write_text(json.dumps(
+        {"modelo_base": base_model, "ejemplos_entrenamiento": n_train, "pasos": iters, "lr": lr,
          "dropout": dropout, "capas": layers, "validacion_por_paso": val_losses}, indent=2))
 
 

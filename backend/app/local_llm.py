@@ -44,25 +44,17 @@ quantity: null. Lo que no quede claro va en "uncertainties".
 - Los pasos deben poder seguirse sin ver el video: temperaturas, tiempos, fuego y señales de \
 punto ("hasta que dore").
 - Ignora promociones, saludos y llamadas a seguir la cuenta.
-- Si el video no presenta una receta: "is_recipe": false, explica en "description" qué muestra y \
-deja las listas vacías.
+- El texto en pantalla suele traer los ingredientes y cantidades cuando el video solo tiene música.
+- Si el video no presenta una receta: "is_recipe": false y deja las listas vacías.
 - Escribe todo en {language}, aunque el video esté en otro idioma.
 
 Responde SOLO con un objeto JSON con exactamente esta forma (sin texto antes ni después):
 {{
   "is_recipe": true,
   "title": "nombre del plato",
-  "description": "una o dos frases",
   "servings": "4 porciones" o null,
-  "prep_time_minutes": número o null,
-  "cook_time_minutes": número o null,
-  "total_time_minutes": número o null,
-  "difficulty": "fácil" | "media" | "difícil" | null,
   "ingredients": [{{"name": "harina", "quantity": "200", "unit": "g", "notes": null}}],
-  "steps": [{{"number": 1, "instruction": "…", "duration_minutes": número o null, "timestamp": "mm:ss" o null}}],
-  "equipment": ["…"],
-  "tips": ["…"],
-  "uncertainties": ["…"]
+  "steps": ["primer paso", "segundo paso"]
 }}"""
 
 _lock = threading.Lock()  # un solo modelo en memoria y una generación a la vez
@@ -99,15 +91,40 @@ def _cut(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + " […]"
 
 
+_NOISE_TAG = re.compile(r"\[(?!\d{1,2}:\d{2}\])[^\]\n]{1,25}\]")  # [Music], [Música], [음악]… (no los minutos)
+_EMPTY_TS = re.compile(r"^\[\d{1,2}:\d{2}\]\s*$", re.M)
+
+
+def clean_transcript(text: str) -> str:
+    """Quita las etiquetas de música y descarta las «transcripciones» de videos sin voz.
+
+    Whisper y los subtítulos automáticos inventan cosas cuando solo hay música ("You", "mm", "k").
+    """
+    text = _EMPTY_TS.sub("", _NOISE_TAG.sub("", text))
+    text = re.sub(r"\n{2,}", "\n", text).strip()
+    words = re.findall(r"[^\W\d_]{2,}", re.sub(r"\[\d{1,2}:\d{2}\]", "", text))
+    return text if len(words) >= 8 else ""
+
+
+def messages_for(data: VideoData, language: str) -> list[dict]:
+    """Mensajes de chat del motor local. El entrenamiento usa esta misma función."""
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT.format(language=language)},
+        {"role": "user", "content": build_prompt(data)},
+    ]
+
+
 def build_prompt(data: VideoData) -> str:
     from .pipeline import _fmt_ts
+
+    transcript = clean_transcript(data.transcript)
 
     return (
         f"Autor: {data.uploader or 'desconocido'}\n"
         f"Duración: {_fmt_ts(data.duration)}\n"
         f"Título: {data.title or '(sin título)'}\n\n"
         f"<descripcion_del_autor>\n{_cut(data.description, MAX_DESCRIPTION) or '(vacía)'}\n</descripcion_del_autor>\n\n"
-        f"<transcripcion>\n{_cut(data.transcript, MAX_TRANSCRIPT) or '(el video no tiene audio hablado)'}\n</transcripcion>\n\n"
+        f"<transcripcion>\n{_cut(transcript, MAX_TRANSCRIPT) or '(el video no tiene voz, solo música)'}\n</transcripcion>\n\n"
         f"<texto_en_pantalla>\n{_cut(data.ocr_text, MAX_OCR) or '(no se detectó texto)'}\n</texto_en_pantalla>\n\n"
         "Reconstruye la receta de este video en JSON."
     )
@@ -195,10 +212,7 @@ def analyze_local(data: VideoData, language: str) -> Recipe:
 
     with _lock:
         model, tokenizer = _load()
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT.format(language=language)},
-            {"role": "user", "content": build_prompt(data)},
-        ]
+        messages = messages_for(data, language)
         prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
         text, last = "", None
         for last in stream_generate(model, tokenizer, prompt=prompt, max_tokens=MAX_TOKENS):
