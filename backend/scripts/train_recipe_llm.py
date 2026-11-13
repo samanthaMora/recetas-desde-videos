@@ -176,19 +176,21 @@ def split_by_channel(examples: list[dict]) -> dict[str, list[dict]]:
     size = {c: sum(1 for e in examples if e["channel"] == c) for c in channels}
     mute = {c: sum(1 for e in examples if e["channel"] == c and not local_llm.clean_transcript(e["transcript"]))
             for c in channels}
-    for seed in range(SEED, SEED + 500):
+    for seed in range(SEED, SEED + 20000):
         order = channels[:]
         random.Random(seed).shuffle(order)
         split, counts = {}, {"test": 0, "valid": 0}
         for c in order:
-            name = ("test" if counts["test"] < 0.17 * len(examples)
-                    else "valid" if counts["valid"] < 0.12 * len(examples) else "train")
+            n = len(examples)  # sin pasarse: los canales grandes no deben vaciar el entrenamiento
+            name = ("test" if counts["test"] + size[c] <= 0.18 * n and size[c] <= 30  # test con muchos canales
+                    else "valid" if counts["valid"] + size[c] <= 0.12 * n else "train")
             split[c] = name
             if name in counts:
                 counts[name] += size[c]
         test_mute = sum(mute[c] for c in channels if split[c] == "test") / max(1, counts["test"])
         valid_mute = sum(mute[c] for c in channels if split[c] == "valid") / max(1, counts["valid"])
-        if 0.2 <= test_mute <= 0.5 and 0.15 <= valid_mute <= 0.5:
+        big_enough = counts["test"] >= 0.12 * len(examples) and counts["valid"] >= 0.07 * len(examples)
+        if big_enough and 0.2 <= test_mute <= 0.5 and 0.15 <= valid_mute <= 0.5:
             break
     else:
         raise SystemExit("No encontré un reparto con videos sin voz en test y validación.")
